@@ -1,10 +1,10 @@
+require "rubygems"
 require "yaml"
 require "logger"
-require "rubygems"
 require "active_support"
 
 class GeneticAlgorithm
-  attr_reader :generations, :p_combination, :p_mutation
+  attr_reader :generations, :p_combination, :p_mutation, :best
   
   # Must be initialized with a Array of chromosomes
   # To be a chomosome the object must implement the next methods:
@@ -13,33 +13,28 @@ class GeneticAlgorithm
   #  - mutate
   #  Accepts the next properties:
   #   - extra_generations: adds given array of generations to the GeneticAlgorithm's own array of generations.
-  #   - p_combination: probability of combiantion ( by default 0.2 )
+  #   - p_combination: probability of combination ( by default 0.2 )
   #   - p_mutation: probability of mutation ( by default 0.01 )
   #   - max_population: maximum number of individuals that are allowed to form a generation.
   #   - logger: logger to write messages if given.
   def initialize(in_pop, prop = {})    
     @generations = [in_pop]
-    @generations += prop[:extra_generations] if prop[:extra_generations]
+    #@generations += prop[:extra_generations] if prop[:extra_generations]
     @p_combination = prop[:p_combination] || 0.2
     @p_mutation = prop[:p_mutation] || 0.01
     @max_population =  prop[:max_population]
-    @logger = prop[:logger] if prop[:logger]
-    @use_threads = prop[:use_threads] if prop[:use_threads]
+    @logger = prop[:logger]
+    @use_threads = prop[:use_threads]
 #    mean_fitness
   end
 
 
 # HELPER METHODS
 
-  # Returns the number of generations that are in the GeneticAlgorithm object.
-  def num_generations
-    @generations.size - 1
-  end
-
   # Returns an array with the best fitted individuals for given
   # generation number ( by default from last generation ).
   def best_fit(num_generation = -1)
-    raise "Generation not generated still num generations = #{num_generations}" if num_generation > num_generations  
+    raise "Generation not generated still num generations = #{num_generations}" if num_generation > @generations.size - 1  
     generation = @generations[num_generation]
     max_fitness = generation.collect { |chromosome| chromosome.fitness }.max
     generation.select { |chromosome| chromosome.fitness == max_fitness }
@@ -48,18 +43,18 @@ class GeneticAlgorithm
   # Returns the mean of the fitness for given
   # generation number ( by default from last generation ).
   def mean_fitness(num = -1)
-    raise "Generation not generated still num generations = #{num_generations}" if num > self.num_generations
-    num = self.num_generations if num == -1
+#    raise "Generation not generated still num generations = #{num_generations}" if num > self.num_generations
+#    num = self.num_generations if num == -1
     sum_fitness = 0
     @generations[num].each { |chromosome| sum_fitness += chromosome.fitness }
-    sum_fitness.to_f / @generations[num].size.to_f
+    sum_fitness.to_f / @generations[num].size
   end
 
   # Returns a GeneticAlgorithm object with the generations
   # loaded from given files and with properties prop.
   # Files must contain the chromosomes in YAML format.
   def self.populate_from_files(a_filenames, prop = {})
-    a_filenames = [a_filenames] if a_filenames.class == String
+    a_filenames = [a_filenames] if a_filenames.is_a? String
     
     loaded_generations = a_filenames.collect { |filename| YAML.load(File.open(filename, "r")) }
     prop[:extra_generations] = loaded_generations[1..-1] if loaded_generations.size > 1
@@ -78,24 +73,35 @@ class GeneticAlgorithm
 
   # Evolves the actual generation num_steps steps (1 by default).
   def evolve(num_steps = 1)
-    num_steps.times do
-      @generations << evaluation_with_threads(@generations[-1])
+    n = num_steps.to_f
+    
+    @best = @generations.last.first
+    
+    num_steps.times do |i|
+#      @generations << evaluation_with_threads(@generations[-1])
+      @generations << @generations[-1]
+      
       selection!
-      recombination! 
-      mutation!
+      recombination!
+      mutation!(1.0 - i / n)
+      
+      @generations.last.each do |chromosome|
+        @best = chromosome if chromosome.fitness > @best.fitness
+      end
     end
+    
+    self
   end
   
   # Prepares given generation for evaluation ( evaluates its fitness ).
   def evaluation(g)
     @logger.debug "Evaluation " + g.size.to_s + " chromosomes." if @logger
     i = 0
-    g.collect do |chromosome|
+    g.each do |chromosome|
       i += 1
       @logger.debug "Evaluating chromosome #{i}:" if @logger
       @logger.debug "#{chromosome.stats.join("\n")}" if @logger
       chromosome.fitness
-      chromosome
     end
   end
 
@@ -105,6 +111,7 @@ class GeneticAlgorithm
     @logger.debug "Evaluation " + g.size.to_s + " chromosomes." if @logger
     threads = []
     i = 0
+    
     g.each do |chromosome|
       i += 1
       @logger.debug "Evaluating chromosome #{i}:" if @logger
@@ -114,20 +121,22 @@ class GeneticAlgorithm
         @logger.debug "Thread finished #{Thread.current.object_id} - #{Thread.current.status}" if @logger
       end
     end
+    
     # Wait for threads for finish
 		threads.each do |thread|
 			@logger.debug "#{thread.status}" if @logger
 			thread.join
 			@logger.debug "#{thread.status}" if @logger
 		end
-    return g
+    
+    g
   end
 
   
   # Selects population to survive and recombine
   def selection(g)
     g_tmp = remainder_stochastic_sampling(g)
-    g_tmp = g_tmp.sort_by {|i| -i.fitness }[0..(@max_population-1)] if @max_population && (g_tmp.size > @max_population)
+    g_tmp = g_tmp.sort_by {|i| -i.fitness }[0, @max_population] if @max_population && (g_tmp.size > @max_population)
     g_tmp
   end
   def selection!; @generations[-1] = selection(@generations[-1]); end
@@ -135,33 +144,34 @@ class GeneticAlgorithm
   # Recombines population  
   def recombination(g)
     @logger.debug "Recombination " + g.size.to_s + " chromosomes." if @logger
-    new_generation = g.dup.shuffle!
+    new_generation = g.shuffle
     @logger.debug "Shuffled!" if @logger
-    new_children = []
-    new_generation.in_groups_of(2) do |chromosome1, chromosome2|
-      next if chromosome2.nil?
-      if rand > (1 - @p_combination)
+    
+    new_generation.each_slice(2) do |chromosome1, chromosome2|
+      if chromosome2 and rand > (1 - @p_combination)
         @logger.debug "Recombining" if @logger
-        new_children << chromosome1.recombine(chromosome2)
+        new_generation += chromosome1.recombine(chromosome2)
       end
     end
-    new_generation + new_children    
+    
+    new_generation    
   end
 
   def recombination!; @generations[-1] = recombination(@generations[-1]); end
 
   # Mutates population
-  def mutation(g)
+  def mutation(g, impact)
     @logger.debug "Mutation " + g.size.to_s + " chromosomes." if @logger  
-    new_generation = g.dup
-    new_generation.each do |chromosome|
+    g.map do |chromosome|
       if rand > (1 - @p_mutation)
         @logger.debug "Mutate" if @logger
-        chromosome.mutate 
+        chromosome.mutant(impact)
+      else
+        chromosome
       end
     end
   end
-  def mutation!; @generations[-1] = mutation(@generations[-1]); end
+  def mutation!(impact); @generations[-1] = mutation(@generations[-1], impact); end
   
   # Remainder Stochastic Sampling algorithm for selection.
   def remainder_stochastic_sampling(g)

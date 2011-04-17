@@ -22,9 +22,8 @@ class Array
   # c - d
   # 
   def each_pair
-    num = self.size/2
-    (0..num-1).collect do |index|
-      yield self[index*2], self[(index*2)+1]
+    (self.size / 2).times do |i| i *= 2
+      yield self[i], self[i+1]
     end
   end
   
