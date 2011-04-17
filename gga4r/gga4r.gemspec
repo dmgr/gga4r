@@ -1,7 +1,7 @@
 Gem::Specification.new do |s|
   s.platform    = Gem::Platform::RUBY
   s.name        = 'gga4r'
-  s.version     = 0.0.0
+  s.version     = '0.0.0'
   s.summary     = ''
   s.description = ''
   s.required_ruby_version = '>= 1.8.7'
